@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>個人記帳系統 Shu-Yu</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg: #f4f7f6; --card: #ffffff; --text: #333;
+            --primary: #4a90e2; --accent: #67c23a; --danger: #f56c6c; --border: #ddd;
+        }
+        .dark {
+            --bg: #1a1a1a; --card: #2d2d2d; --text: #e0e0e0; --primary: #3a7bd5; --border: #444;
+        }
+
+        body { font-family: 'Segoe UI', sans-serif; background-color: var(--bg); color: var(--text); margin: 0; padding: 20px; transition: 0.3s; }
+        .container { max-width: 1100px; margin: 0 auto; }
+        .card { background: var(--card); border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .top-controls { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
+        
+        button { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; background: var(--primary); color: white; transition: 0.2s; }
+        .btn-success { background: var(--accent); }
+        .btn-import { background: #9c27b0; }
+        
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 12px; border-bottom: 1px solid var(--border); text-align: center; }
+        
+        .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .yearly-chart-container { grid-column: span 2; }
+        
+        input[type="file"] { display: none; }
+        .import-label { padding: 8px 16px; background: #9c27b0; color: white; border-radius: 6px; cursor: pointer; display: inline-block; }
+
+        @media (max-width: 850px) { .charts-grid { grid-template-columns: 1fr; } .yearly-chart-container { grid-column: span 1; } }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>📊 記帳拉~~ Shuyu</h1>
+
+    <div class="top-controls card">
+        <button onclick="setView('expense')">支出分析</button>
+        <button class="btn-success" onclick="setView('income')">收入分析</button>
+        <input type="month" id="monthPicker" onchange="changeMonth(this.value)">
+        
+        <button style="background:#607d8b" onclick="exportCSV()">匯出 CSV</button>
+        <label class="import-label">匯入數據 <input type="file" id="csvImport" accept=".csv"></label>
+        <button onclick="toggleDarkMode()">🌓</button>
+    </div>
+
+    <div class="card yearly-chart-container">
+        <div style="display:flex; justify-content: space-between; align-items: center;">
+            <h2>年度收支走勢 (<span id="yearDisplay">2024</span>)</h2>
+            <select id="yearPicker" onchange="updateYearlyChart(this.value)"></select>
+        </div>
+        <canvas id="yearlyChart" height="100"></canvas>
+    </div>
+
+    <div class="charts-grid">
+        <div class="card">
+            <h3 id="overviewTitle">每月分類統計</h3>
+            <canvas id="pieChart"></canvas>
+        </div>
+        <div class="card">
+            <h3>分類預算進度</h3>
+            <div id="budgetBars"></div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>交易明細</h2>
+        <table id="recordsTable">
+            <thead>
+                <tr><th>日期</th><th>類型</th><th>帳戶</th><th>分類</th><th>金額</th><th>操作</th></tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+        <button class="btn-success" style="width:100%; margin-top:10px" onclick="addRow()">+ 新增明細</button>
+    </div>
+</div>
+
+<script>
+// --- 資料結構 ---
+const categories = ["吃飯", "娛樂", "交通", "生活", "醫療", "其他"];
+const budget = {"吃飯": 8000, "娛樂": 3000, "交通": 2000, "生活": 4000, "醫療": 2000, "其他": 1000};
+let records = JSON.parse(localStorage.getItem('records') || '[]');
+let currentMonth = new Date().toISOString().slice(0, 7);
+let currentView = 'expense';
+let charts = {};
+
+// --- 初始化 ---
+window.onload = () => {
+    initYearPicker();
+    setupCSVImport();
+    if(localStorage.getItem('dark') === 'true') document.body.classList.add('dark');
+    document.getElementById('monthPicker').value = currentMonth;
+    renderAll();
+};
+
+function renderAll() {
+    renderTable();
+    updateCharts();
+    updateYearlyChart(currentMonth.split('-')[0]);
+    renderBudgetBars();
+}
+
+// --- CSV 匯入邏輯 ---
+function setupCSVImport() {
+    document.getElementById('csvImport').addEventListener('change', function(e) {
+        const file = e.target.files[0];
+        const reader = new FileReader();
+        reader.onload = function(event) {
+            const text = event.target.result;
+            const rows = text.split('\n').slice(1); // 跳過標題
+            rows.forEach(row => {
+                const cols = row.split(',');
+                if(cols.length >= 6) {
+                    records.push({
+                        date: cols[0],
+                        type: cols[1],
+                        account: cols[2],
+                        category: cols[3],
+                        item: cols[4],
+                        amount: parseFloat(cols[5])
+                    });
+                }
+            });
+            saveData();
+            alert('數據匯入成功！');
+            renderAll();
+        };
+        reader.readAsText(file);
+    });
+}
+
+// --- 年度報表統計 ---
+function initYearPicker() {
+    const picker = document.getElementById('yearPicker');
+    const currentYear = new Date().getFullYear();
+    for(let i = currentYear - 3; i <= currentYear + 1; i++) {
+        const opt = document.createElement('option');
+        opt.value = i; opt.innerText = i + ' 年';
+        if(i === currentYear) opt.selected = true;
+        picker.appendChild(opt);
+    }
+}
+
+function updateYearlyChart(year) {
+    document.getElementById('yearDisplay').innerText = year;
+    const monthlyIncome = Array(12).fill(0);
+    const monthlyExpense = Array(12).fill(0);
+
+    records.filter(r => r.date.startsWith(year)).forEach(r => {
+        const month = parseInt(r.date.split('-')[1]) - 1;
+        if(r.type === '收入') monthlyIncome[month] += r.amount;
+        else monthlyExpense[month] += r.amount;
+    });
+
+    const ctx = document.getElementById('yearlyChart').getContext('2d');
+    if(charts.yearly) charts.yearly.destroy();
+    charts.yearly = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'],
+            datasets: [
+                { label: '收入', data: monthlyIncome, backgroundColor: '#67c23a' },
+                { label: '支出', data: monthlyExpense, backgroundColor: '#f56c6c' }
+            ]
+        },
+        options: { responsive: true, scales: { y: { beginAtZero: true } } }
+    });
+}
+
+// --- 預算條渲染 ---
+function renderBudgetBars() {
+    const container = document.getElementById('budgetBars');
+    container.innerHTML = '';
+    const filtered = records.filter(r => r.date.startsWith(currentMonth));
+    
+    categories.forEach(cat => {
+        const spent = filtered.filter(r => r.category === cat && r.type !== '收入').reduce((a, b) => a + b.amount, 0);
+        const percent = Math.min((spent / budget[cat]) * 100, 100);
+        const color = percent >= 100 ? '#f56c6c' : '#4a90e2';
+        
+        container.innerHTML += `
+            <div style="margin-bottom:10px">
+                <div style="display:flex; justify-content:space-between; font-size:12px">
+                    <span>${cat}</span><span>${spent} / ${budget[cat]}</span>
+                </div>
+                <div style="background:#eee; height:8px; border-radius:4px; overflow:hidden">
+                    <div style="width:${percent}%; background:${color}; height:100%; transition:0.5s"></div>
+                </div>
+            </div>
+        `;
+    });
+}
+
+// --- 基礎表格與功能 ---
+function renderTable() {
+    const tbody = document.querySelector('#recordsTable tbody');
+    tbody.innerHTML = '';
+    records.filter(r => r.date.startsWith(currentMonth)).forEach((r, idx) => {
+        const realIdx = records.indexOf(r);
+        tbody.innerHTML += `
+            <tr>
+                <td><input type="date" value="${r.date}" onchange="updateRecord(${realIdx},'date',this.value)"></td>
+                <td>${r.type}</td>
+                <td>${r.account}</td>
+                <td>${r.category}</td>
+                <td><input type="number" value="${r.amount}" style="width:70px" onchange="updateRecord(${realIdx},'amount',parseFloat(this.value))"></td>
+                <td><button onclick="deleteRow(${realIdx})" class="btn-danger">❌</button></td>
+            </tr>
+        `;
+    });
+}
+
+function updateRecord(idx, f, v) { records[idx][f] = v; saveData(); renderAll(); }
+function addRow() { records.push({date: currentMonth + "-01", type: '支出', account: '現金', category: '吃飯', item: '早餐', amount: 0}); saveData(); renderAll(); }
+function deleteRow(i) { if(confirm('刪除？')){ records.splice(i, 1); saveData(); renderAll(); } }
+function saveData() { localStorage.setItem('records', JSON.stringify(records)); }
+function changeMonth(m) { currentMonth = m; renderAll(); }
+function setView(v) { currentView = v; renderAll(); }
+function toggleDarkMode() { document.body.classList.toggle('dark'); localStorage.setItem('dark', document.body.classList.contains('dark')); }
+
+function updateCharts() {
+    const filtered = records.filter(r => r.date.startsWith(currentMonth));
+    const catData = categories.map(c => filtered.filter(r => r.category === c && (currentView === 'income' ? r.type==='收入' : r.type!=='收入')).reduce((a,b)=>a+b.amount, 0));
+    
+    if(charts.pie) charts.pie.destroy();
+    charts.pie = new Chart(document.getElementById('pieChart'), {
+        type: 'doughnut',
+        data: { labels: categories, datasets: [{ data: catData, backgroundColor: ['#4a90e2','#67c23a','#f56c6c','#e6a23c','#909399','#9c27b0'] }] }
+    });
+}
+
+function exportCSV() {
+    let csv = '\uFEFF日期,類型,帳戶,分類,品項,金額\n';
+    records.forEach(r => csv += `${r.date},${r.type},${r.account},${r.category},${r.item},${r.amount}\n`);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `記帳備份.csv`;
+    a.click();
+}
+</script>
+</body>
+</html>
